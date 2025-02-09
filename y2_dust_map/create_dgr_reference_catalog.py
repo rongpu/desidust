@@ -1,0 +1,352 @@
+# Create (mostly) unbiased reference catalog for g-r correction
+
+from __future__ import division, print_function
+import sys, os, glob, time, warnings, gc
+import numpy as np
+import matplotlib.pyplot as plt
+from astropy.table import Table, vstack, hstack, join
+import fitsio
+import healpy as hp
+
+from sklearn.neighbors import NearestNeighbors
+from multiprocessing import Pool
+
+nmad = lambda x: 1.4826*np.median(np.abs(x-np.median(x)))
+
+n_processes = 128
+nside = 128
+
+
+def get_nn_mean(data):
+    tt = Table()
+    tt['model_gr_offset'], tt['model_gr_nmad'], tt['model_gr_std'] = np.zeros((3, len(data)))
+    for index in range(len(data)):
+        idx = nbrs.kneighbors(data[[index]])[1][0]
+        v = cat_ref['dgr_ref'][idx].copy()  # offset in delta_g-r
+        # 5-sigma clipping
+        sigma = nmad(v)
+        mask = (v<(np.mean(v)-5*sigma)) | (v>(np.mean(v)+5*sigma))
+        v = np.clip(v, np.mean(v)-5*sigma, np.mean(v)+5*sigma)
+        if np.sum(mask)/len(mask)>0.05:
+            print('More than 5% outliers: {}'.format(np.sum(mask)),
+                  data[index]*np.array([x1_sigma, x2_sigma, x3_sigma]))
+        tt['model_gr_offset'][index] = np.mean(v)
+        tt['model_gr_nmad'][index] = sigma
+        tt['model_gr_std'][index] = np.std(v)
+
+    return tt
+
+
+def get_nn_mean_wrapper(data, n_processes=128):
+    idx_list = np.array_split(np.arange(len(data)), n_processes)
+    data_list = []
+    for index in range(len(idx_list)):
+        data_list.append(data[idx_list[index]])
+    with Pool(processes=n_processes) as pool:
+        res = pool.map(get_nn_mean, data_list)
+    tt = vstack(res, join_type='exact')
+
+    return tt
+
+
+def hlmean(data, maxpairs=1e8, random_seed=None, verbose=True):
+    '''
+    Hodges-Lehmann estimator.
+    '''
+
+    import itertools
+
+    maxpairs = int(maxpairs)
+    ndata = len(data)
+
+    if ndata==0:
+        if verbose: print('H-L mean: empty array!!!')
+        return None
+    if ndata==1:
+        return data[0]
+    if ndata*(ndata-1)/2 <= maxpairs:
+        # only non-identical indices are included
+        idx1, idx2 = np.array(list(itertools.combinations(np.arange(ndata), 2))).transpose()
+        pairmean1 = (data[idx1]+data[idx2])/2.
+        # the pairwise mean of identical indices
+        pairmean2 = data
+        pairmean = np.concatenate([pairmean1, pairmean2])
+        hlmean_value = np.median(pairmean)
+    else:
+        if verbose: print('Too many pairs; only computing {} pairs'.format(maxpairs))
+        if random_seed is not None:
+            np.random.seed(random_seed)
+        idx1, idx2 = np.random.choice(ndata, size=(maxpairs, 2)).transpose()
+        pairmean = (data[idx1]+data[idx2])/2.
+        hlmean_value = np.median(pairmean)
+
+    return(hlmean_value)
+
+
+def get_stats_in_pixel(pix_idx):
+
+    pix_list = pix_unique[pix_idx]
+
+    hp_table = Table()
+    hp_table['HPXPIXEL'] = pix_list
+    # hp_table['RA'], hp_table['DEC'] = hp.pixelfunc.pix2ang(nside, pix_list, nest=False, lonlat=True)
+
+    hp_table['delta_gr_mean'] = 0.
+    hp_table['delta_gr_median'] = 0.
+    hp_table['delta_gr_hlmean'] = 0.
+    hp_table['n_star'] = 0
+    hp_table['EBV_SFD'] = 0.
+
+    for index in np.arange(len(pix_idx)):
+        idx = pixorder[pixcnts[pix_idx[index]]:pixcnts[pix_idx[index]+1]]
+        v = cat['dgr'][idx].copy()
+        hp_table['delta_gr_mean'][index] = np.mean(v)
+        hp_table['delta_gr_hlmean'][index] = hlmean(v)
+        hp_table['delta_gr_median'][index] = np.median(v)
+        hp_table['n_star'][index] = len(v)
+        hp_table['EBV_SFD'][index] = np.mean(cat['EBV_SFD'][idx])
+
+    return hp_table
+
+
+for field in ['south', 'north']:
+
+    ################################################### Create catalogs ###################################################
+
+    print('\n##################################', field, '##################################')
+
+    cat = Table(fitsio.read('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/stars_combined_{}.fits'.format(field)))
+    cat1 = Table(fitsio.read('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/stars_combined_gaia_ls_photom_{}.fits'.format(field)))
+    assert len(cat)==len(cat1) and np.all(cat['TARGETID']==cat1['TARGETID'])
+    cat1.remove_column('TARGETID')
+    cat = hstack([cat, cat1])
+
+    cat.rename_column('EBV', 'EBV_SFD')
+
+    # No extinction correction
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cat['gmag'] = 22.5 - 2.5*np.log10(cat['FLUX_G'])
+        cat['rmag'] = 22.5 - 2.5*np.log10(cat['FLUX_R'])
+        cat['zmag'] = 22.5 - 2.5*np.log10(cat['FLUX_Z'])
+
+    # Use the SFD-based reddened delta_g-r value for the initial correction and for anchoring the zero point
+    model_gr_sfd = np.zeros(len(cat))
+    model_gr_sfd[cat['PHOTSYS_PHOTOM']=='N'] = (cat['MODEL_GMAG_N_REDDENED']-cat['MODEL_RMAG_N_REDDENED'])[cat['PHOTSYS_PHOTOM']=='N']
+    model_gr_sfd[cat['PHOTSYS_PHOTOM']=='S'] = (cat['MODEL_GMAG_S_REDDENED']-cat['MODEL_RMAG_S_REDDENED'])[cat['PHOTSYS_PHOTOM']=='S']
+    cat['dgr_sfd_raw'] = (cat['gmag']-cat['rmag']) - model_gr_sfd
+    assert np.sum(model_gr_sfd==0)==0
+
+    # Use the un-reddened delta_g-r value for the (iterative) correction
+    model_gr = np.zeros(len(cat))
+    model_gr[cat['PHOTSYS_PHOTOM']=='N'] = (cat['MODEL_GMAG_N']-cat['MODEL_RMAG_N'])[cat['PHOTSYS_PHOTOM']=='N']
+    model_gr[cat['PHOTSYS_PHOTOM']=='S'] = (cat['MODEL_GMAG_S']-cat['MODEL_RMAG_S'])[cat['PHOTSYS_PHOTOM']=='S']
+    cat['dgr_raw'] = (cat['gmag']-cat['rmag']) - model_gr
+    assert np.sum(model_gr==0)==0
+
+    # extinction corrected colors
+    cat['g-r'] = (cat['gmag'] - 3.214*cat['EBV_SFD']) - (cat['rmag']-2.165*cat['EBV_SFD'])
+    cat['r-z'] = (cat['rmag'] - 2.165*cat['EBV_SFD']) - (cat['zmag']-1.211*cat['EBV_SFD'])
+
+    cat['EFFTIME_LRG'] = cat['TSNR2_LRG'] * 12.15
+
+    ###################################### Initial quality cuts ######################################
+
+    mask = cat['PHOT_G_MEAN_MAG']!=0
+    print('PHOT_G_MEAN_MAG', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['PARALLAX_ERROR']!=0
+    print('PARALLAX_ERROR', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    # Remove saturated objects
+    mask = (cat['ANYMASK_G']==0) & (cat['ANYMASK_R']==0)
+    print('ANYMASK_G/R', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['ZWARN']==0
+    print('ZWARN', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['DELTACHI2']>100
+    print('DELTACHI2', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['SPECTYPE']=='STAR'
+    print('SPECTYPE', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['SUBTYPE']!='WD'
+    print('SUBTYPE', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['RVS_WARN']==0
+    print('RVS_WARN', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    # Remove galaxies
+    mask = cat['Z']<0.002  # There are no galaxies at z<0.002 based on VI
+    print('Z', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    mask = cat['EFFTIME_LRG']>30
+    print('EFFTIME_LRG', np.sum(~mask), len(mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+
+    # Keep unique objects –– choose the highest BLUE_SN object
+    print(len(cat), len(np.unique(cat['TARGETID_DR9'])))
+    cat.sort('SN_B', reverse=True)
+    _, idx_keep = np.unique(cat['TARGETID_DR9'], return_index=True)
+    cat = cat[idx_keep]
+    print(len(cat), len(np.unique(cat['TARGETID_DR9'])))
+
+    if field=='north':
+        mask = cat['DEC']>30
+        print('North Dec cut', np.sum(~mask), len(mask), np.sum(~mask)/len(mask))
+        cat = cat[mask]
+
+    ################################################################
+    mask_extra = cat['PARALLAX']<1.
+    print('PARALLAX', np.sum(~mask_extra), np.sum(~mask_extra)/len(mask_extra))
+    mask_extra &= cat['SN_B']>8
+    print('+ SN_B', np.sum(~mask_extra), np.sum(~mask_extra)/len(mask_extra))
+    # cat['extra_cuts'] = mask_extra.copy()
+    cat = cat[mask_extra]
+    ################################################################
+
+    print(len(cat))
+
+    print('More quality cuts')
+
+    mask_quality = (cat['NOBS_G']>0) & (cat['NOBS_R']>0) & (cat['NOBS_Z']>0)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    mask_quality &= (cat['FLUX_IVAR_G']>0) & (cat['FLUX_IVAR_R']>0) & (cat['FLUX_IVAR_Z']>0)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    mask_quality &= (cat['FRACFLUX_G']<0.01) & (cat['FRACFLUX_R']<0.01)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    mask_quality &= (cat['FRACMASKED_G']<0.6) & (cat['FRACMASKED_R']<0.6)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    mask_quality &= (cat['FIBERFLUX_G']/cat['FIBERTOTFLUX_G']>0.99) & (cat['FIBERFLUX_R']/cat['FIBERTOTFLUX_R']>0.99)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    mask_quality &= (cat['PHOT_G_MEAN_MAG']!=0) & (cat['PHOT_BP_MEAN_MAG']!=0) & (cat['PHOT_RP_MEAN_MAG']!=0)
+    print(np.sum(~mask_quality), np.sum(~mask_quality)/len(mask_quality))
+    cat = cat[mask_quality]
+    print(len(cat))
+
+    mask = np.abs(cat['ls_mag_g']-cat['gmag'])<0.1
+    mask &= np.abs(cat['ls_mag_r']-cat['rmag'])<0.1
+    print('Gaia outliers', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+    print(len(cat))
+
+    print('Stellar parameter cuts')
+    mask_good = (cat['LOGG']>3.5) & (cat['LOGG']<5.2)
+    print(np.sum(~mask_good), np.sum(~mask_good)/len(mask_good))
+    mask_good &= (cat['TEFF']>5000) & (cat['TEFF']<6500)
+    print(np.sum(~mask_good), np.sum(~mask_good)/len(mask_good))
+    mask_good &= (cat['FEH']>-4.0) & (cat['FEH']<0.5)
+    print(np.sum(~mask_good), np.sum(~mask_good)/len(mask_good))
+    cat = cat[mask_good]
+    print(len(cat))
+
+    # Select the unbiased stars
+    mask = cat['bright_mws'] | cat['backup_mws'] | cat['backup_std']
+    print('Unbiased', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+    print(len(cat))
+
+    mask = cat['EBV_SFD']<0.1  # SFD EBV cut for the reference catalog
+    print('EBV_SFD', np.sum(~mask), np.sum(~mask)/len(mask))
+    cat = cat[mask]
+    print(len(cat))
+
+    # Randomly downselect stars per healpix pixel to create uniform spatial sampling for the reference catalog
+    max_n_star = 50  # maximum number of star per pixel
+    nside_downselect = 128
+    hp_pix = hp.pixelfunc.ang2pix(nside_downselect, cat['TARGET_RA'], cat['TARGET_DEC'], lonlat=True)
+    tmp = Table()
+    tmp['pix'], tmp['count'] = np.unique(hp_pix, return_counts=True)
+    cat['downselect'] = False
+    mask = tmp['count']<=max_n_star
+    mask = np.in1d(hp_pix, tmp['pix'][mask])
+    cat['downselect'][mask] = True
+    mask = tmp['count']>max_n_star
+    for pix in tmp['pix'][mask]:
+        idx = np.where(np.in1d(hp_pix, pix))[0]
+        idx = np.random.choice(idx, size=max_n_star, replace=False)
+        cat['downselect'][idx] = True
+    print('Downselect', np.sum(cat['downselect'])/len(cat))
+
+    for iteration in range(7):
+
+        print('\nIteration {}'.format(iteration))
+
+        if iteration==0:
+            mask = cat['EBV_SFD']<0.04  # More restrictive SFD EBV cut for the initial correction
+            print('Restrictive EBV', np.sum(np.sum(mask))/len(mask))
+            cat_ref = cat[mask].copy()
+            cat_ref['dgr_ref'] = cat_ref['dgr_sfd_raw'].copy()  # offset in delta_g-r
+        else:
+            maps = Table(fitsio.read('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/tmp/dgr_map_{}_{}_reference_{}.fits'.format(field, nside, iteration-1)))
+            mask = maps['n_star']>=16
+            print('n_star', np.sum(~mask)/len(mask))
+            maps = maps[mask]
+            cat_ref = cat.copy()
+            cat_ref['HPXPIXEL'] = hp.ang2pix(nside, cat_ref['TARGET_RA'], cat_ref['TARGET_DEC'], nest=False, lonlat=True)
+            cat_ref = join(cat_ref, maps[['delta_gr_mean', 'HPXPIXEL']], keys='HPXPIXEL', join_type='inner')
+            cat_ref['dgr_ref'] = cat_ref['dgr_raw'] - cat_ref['delta_gr_mean']  # offset in delta_g-r
+
+        # Apply random downselection on the reference catalog but not the catalog used to generate the EBV maps
+        mask = cat_ref['downselect'].copy()
+        cat_ref = cat_ref[mask]
+        cat_ref.remove_column('downselect')
+        print(len(cat_ref))
+
+        x1, x2, x3 = cat_ref['LOGG'].copy(), cat_ref['FEH'].copy(), cat_ref['TEFF'].copy()
+        x1_sigma, x2_sigma, x3_sigma = nmad(x1), nmad(x2), nmad(x3)
+        x1 /= x1_sigma
+        x2 /= x2_sigma
+        x3 /= x3_sigma
+        X = np.vstack([x1, x2, x3]).T
+        nbrs = NearestNeighbors(n_neighbors=400, algorithm='ball_tree').fit(X)
+
+        X_all = np.vstack([cat['LOGG']/x1_sigma, cat['FEH']/x2_sigma, cat['TEFF']/x3_sigma]).T
+        tt = get_nn_mean_wrapper(X_all, n_processes=n_processes)
+        if 'model_gr_offset' in cat.colnames:
+            cat.remove_columns(['model_gr_offset', 'model_gr_nmad', 'model_gr_std'])
+        cat = hstack([cat, tt], join_type='exact')
+
+        # offset-corrected delta_g-r
+        cat['dgr'] = cat['dgr_raw'] - cat['model_gr_offset']  # To get the corrected model_gr: model_gr_corr = model_gr + model_gr_offset
+
+        #################### Create maps ########################
+
+        pix_allobj = hp.pixelfunc.ang2pix(nside, cat['TARGET_RA'], cat['TARGET_DEC'], lonlat=True)
+        pix_unique, pixcnts = np.unique(pix_allobj, return_counts=True)
+        pixcnts = np.insert(pixcnts, 0, 0)
+        pixcnts = np.cumsum(pixcnts)
+        pixorder = np.argsort(pix_allobj)
+        pix_idx_split = np.array_split(np.arange(len(pix_unique)), n_processes)
+        with Pool(processes=n_processes) as pool:
+            res = pool.map(get_stats_in_pixel, pix_idx_split)
+
+        maps = vstack(res)
+        maps.sort('HPXPIXEL')
+
+        maps.write('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/tmp/dgr_map_{}_{}_reference_{}.fits'.format(field, nside, iteration), overwrite=True)
+
+    #################### Create reference catalog ########################
+
+    # maps = Table(fitsio.read('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/tmp/dgr_map_{}_{}_reference_{}.fits'.format(field, nside, iteration)))
+    mask = maps['n_star']>=16
+    print('n_star', np.sum(~mask)/len(mask))
+    maps = maps[mask]
+
+    cat_ref = cat.copy()
+    cat_ref['HPXPIXEL'] = hp.ang2pix(nside, cat_ref['TARGET_RA'], cat_ref['TARGET_DEC'], nest=False, lonlat=True)
+    cat_ref = join(cat_ref, maps[['delta_gr_mean', 'delta_gr_median', 'delta_gr_hlmean', 'n_star', 'HPXPIXEL']], keys='HPXPIXEL', join_type='inner')
+    cat_ref['dgr_ref'] = cat_ref['dgr_raw'] - cat_ref['delta_gr_mean']  # offset in delta_g-r
+
+    cat_ref.write('/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars/gr_corrected/gr_reference_{}.fits'.format(field), overwrite=True)
+
