@@ -13,7 +13,7 @@
  - Add Gaia-predicted DECam photometry
     `data_prep/add_gaia_decam_photometry.py`
 
-##Create delta_g-r catalogs and maps
+## Create delta_g-r catalogs and maps
  - Create reference catalog for g-r correction
     `create_dgr_reference_catalog.py`
  - Create catalogs and unweighted maps with corrected delta_g-r
@@ -25,7 +25,7 @@
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
     `create_combined_dgr_catalogs_and_weighted_maps.py`
 
-##Create delta_r-z catalogs and maps
+## Create delta_r-z catalogs and maps
  - Create reference catalog for r-z correction
     `create_drz_reference_catalog.py`
  - Create catalogs and unweighted maps with corrected delta_r-z
@@ -37,7 +37,7 @@
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
     `create_combined_drz_catalogs_and_weighted_maps.py`
 
-##Create the KP3 map and the final public map
+## Create the KP3 map and the final public map
  - Create smoothed and inpainted maps
     `create_smoothed_maps.py`
  - Create KP3 maps; it uses DECam extinction coefficients for both North and South
@@ -47,6 +47,6 @@
  - Create final public maps released with the paper; it uses different sets of extinction coefficients for North and South
     `create_final_maps.py`
 
-##Misc
+## Misc
  - Create smoothed and inpainted maps for SFD
     `create_smoothed_sfd_maps.py`
