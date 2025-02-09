@@ -50,3 +50,20 @@
 ## Misc
  - Create smoothed and inpainted maps for SFD
     `create_smoothed_sfd_maps.py`
+
+
+## Dependencies
+Most of the code is run with:
+```
+numpy 1.22.4
+matplotlib 3.6.2
+astropy 5.2.1
+fitsio 1.1.8
+sklearn 1.1.1
+desitarget 2.6.0
+scipy 1.8.1
+statsmodels 0.13.5
+speclite 0.16
+desispec 0.56.5
+desiutil 3.2.6
+```
