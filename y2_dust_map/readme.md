@@ -19,7 +19,7 @@
  - Create catalogs and unweighted maps with corrected delta_g-r
     `create_dgr_catalog_and_unweighted_maps.py`
  - Compute the per-star errors for optimal weighting in map creation
-    per_star_weights_dgr-{north,south}.ipynb
+    `per_star_weights_dgr.py`
  - Create separate North and South weighted maps (e.g., for determining the North/South relative zero point offset)
     `create_ns_dgr_weighted_maps.py`
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
@@ -31,7 +31,7 @@
  - Create catalogs and unweighted maps with corrected delta_r-z
     `create_drz_catalog_and_unweighted_maps.py`
  - Compute the per-star errors for optimal weighting in map creation
-    per_star_weights_drz-{north,south}.ipynb
+    `per_star_weights_drz.py`
  - Create separate North and South weighted maps (e.g., for determining the North/South relative zero point offset)
     `create_ns_drz_weighted_maps.py`
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
