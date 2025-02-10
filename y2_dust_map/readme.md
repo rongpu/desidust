@@ -1,3 +1,5 @@
+Code for the DESI dust map https://arxiv.org/abs/2409.05140
+
 ## Data prep
  - Create combined coadd and model spectrum files (for reproducibility and archiving)
     `data_prep/combine_coadd_and_specmod_spectra-y1.py`
