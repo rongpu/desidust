@@ -1,1 +1,1 @@
-Code repository for the DESI dust map https://arxiv.org/abs/2409.05140
+Code repository for the DESI dust reddening map https://arxiv.org/abs/2409.05140

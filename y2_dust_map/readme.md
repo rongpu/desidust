@@ -1,4 +1,4 @@
-Code for the DESI dust map https://arxiv.org/abs/2409.05140
+Code for the dust reddening map based on first two years of DESI data https://arxiv.org/abs/2409.05140
 
 ## Data prep
  - Create combined coadd and model spectrum files (for reproducibility and archiving)
