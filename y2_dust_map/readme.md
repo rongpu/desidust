@@ -22,8 +22,9 @@ Code for the dust reddening map based on first two years of DESI data https://ar
     `create_dgr_catalog_and_unweighted_maps.py`
  - Compute the per-star errors for optimal weighting in map creation
     `per_star_weights_dgr.py`
- - Create separate North and South weighted maps (e.g., for determining the North/South relative zero point offset)
+ - Create separate North and South weighted maps and determine the North/South relative zero point offset
     `create_ns_dgr_weighted_maps.py`
+    `zero_point_north_vs_south-map_based-dgr.ipynb`
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
     `create_combined_dgr_catalogs_and_weighted_maps.py`
 
@@ -34,8 +35,9 @@ Code for the dust reddening map based on first two years of DESI data https://ar
     `create_drz_catalog_and_unweighted_maps.py`
  - Compute the per-star errors for optimal weighting in map creation
     `per_star_weights_drz.py`
- - Create separate North and South weighted maps (e.g., for determining the North/South relative zero point offset)
+ - Create separate North and South weighted maps and determine the North/South relative zero point offset
     `create_ns_drz_weighted_maps.py`
+    `zero_point_north_vs_south-map_based-drz.ipynb`
  - Created final North+South combined catalog and maps; the North/South relative zero point offset is corrected for; extra cuts (parallax and SN_B) are applied on the final catalog
     `create_combined_drz_catalogs_and_weighted_maps.py`
 
